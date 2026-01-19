@@ -1,8 +1,9 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { AppStep, UploadedImage, LayoutMode, LanguageCode } from './types';
-import { mergeImages, loadImages } from './utils/imageUtils';
+import { mergeImages, loadImages, fileToBase64 } from './utils/imageUtils';
 import { translations, languages } from './translations';
+import { GoogleGenAI } from "@google/genai";
 
 const StepIndicator: React.FC<{ currentStep: AppStep, t: any }> = ({ currentStep, t }) => {
   const steps: AppStep[] = ['UPLOAD', 'SUBSCRIBE', 'ARRANGE', 'DOWNLOAD'];
@@ -36,6 +37,7 @@ export default function App() {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [loadedImages, setLoadedImages] = useState<HTMLImageElement[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isSafetyScanning, setIsSafetyScanning] = useState(false);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>('HORIZONTAL');
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [finalImage, setFinalImage] = useState<string | null>(null);
@@ -43,15 +45,61 @@ export default function App() {
   const [hasVisitedYoutube, setHasVisitedYoutube] = useState(false);
 
   const previewTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const t = translations[lang];
+  const t = translations[lang] || translations['en'];
 
-  // التعرف التلقائي على اللغة
   useEffect(() => {
     const browserLang = navigator.language.split('-')[0] as any;
     if (translations[browserLang]) {
       setLang(browserLang);
     }
   }, []);
+
+  const checkSafety = async (files: File[]) => {
+    setIsSafetyScanning(true);
+    setError(null);
+    try {
+      // Fix: Follow @google/genai guidelines for initialization
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const imageParts = await Promise.all(files.map(async (file) => {
+        const base64 = await fileToBase64(file);
+        return {
+          inlineData: {
+            data: base64.split(',')[1],
+            mimeType: file.type
+          }
+        };
+      }));
+
+      // Fix: Follow @google/genai guidelines for contents structure
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: {
+          parts: [
+            ...imageParts,
+            { text: "Analyze these images for any inappropriate, sensitive, or NSFW content. Respond ONLY with 'SAFE' if all images are clean, or 'UNSAFE' if any image contains nudity, violence, or sensitive content. No explanation." }
+          ]
+        }
+      });
+
+      // Fix: response.text is a getter, not a method
+      const result = response.text?.trim().toUpperCase();
+      if (result === 'UNSAFE') {
+        throw new Error('SAFETY_VIOLATION');
+      }
+      return true;
+    } catch (err: any) {
+      console.error("Safety scan error:", err);
+      if (err.message === 'SAFETY_VIOLATION') {
+        setError(t.safetyError);
+      } else {
+        console.warn("Safety API failed, skipping scan.");
+        return true;
+      }
+      return false;
+    } finally {
+      setIsSafetyScanning(false);
+    }
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
@@ -61,8 +109,11 @@ export default function App() {
       return;
     }
 
+    // تشغيل مستشعر الأمان
+    const isSafe = await checkSafety(files);
+    if (!isSafe) return;
+
     setIsProcessing(true);
-    setError(null);
     try {
       const newImages = files.map((file: File) => ({
         id: Math.random().toString(36).substr(2, 9),
@@ -184,13 +235,23 @@ export default function App() {
       <StepIndicator currentStep={step} t={t} />
 
       <main className="flex-1 relative overflow-hidden flex flex-col min-h-0">
-        {error && (
-          <div className="absolute top-4 left-4 right-4 z-[60] bg-red-600 text-white px-5 py-4 rounded-2xl text-xs font-bold shadow-2xl animate-in slide-in-from-top-4 flex items-center justify-between">
-            <span className="flex items-center gap-2">
-              <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-              {error}
-            </span>
-            <button onClick={() => setError(null)} className="opacity-50 hover:opacity-100 p-1">×</button>
+        {(error || isSafetyScanning) && (
+          <div className="absolute top-4 left-4 right-4 z-[100] animate-in slide-in-from-top-4">
+             {isSafetyScanning && (
+               <div className="bg-emerald-600 text-white px-5 py-4 rounded-2xl text-xs font-bold shadow-2xl flex items-center gap-3">
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  {t.safetyScanning}
+               </div>
+             )}
+             {error && !isSafetyScanning && (
+               <div className="bg-red-600 text-white px-5 py-4 rounded-2xl text-xs font-bold shadow-2xl flex items-center justify-between">
+                <span className="flex items-center gap-2">
+                  <svg className="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                  {error}
+                </span>
+                <button onClick={() => setError(null)} className="opacity-50 hover:opacity-100 p-1">×</button>
+               </div>
+             )}
           </div>
         )}
 
