@@ -1,0 +1,8 @@
+
+{
+  "name": "MergeIt",
+  "description": "Professional High-Speed Multilingual Image Stitching Tool. Merge up to 20 images instantly with zero-scroll efficiency.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
